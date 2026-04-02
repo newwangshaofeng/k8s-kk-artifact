@@ -68,7 +68,8 @@ jobs:
         run: |
           set -euo pipefail
           output_file="kubekey-artifact-k8s-${KUBERNETES_VERSION}-kk-latest-linux-${{ matrix.arch }}.tar.gz"
-          ./kk artifact export -m "manifest-${{ matrix.arch }}.yaml" -o "${output_file}"
+          sudo ./kk artifact export -m "manifest-${{ matrix.arch }}.yaml" -o "${output_file}"
+          sudo chown "$(id -u):$(id -g)" "${output_file}"
           sha256sum "${output_file}" > "${output_file}.sha256"
           echo "output_file=${output_file}" >> "${GITHUB_OUTPUT}"
 
