@@ -1,0 +1,69 @@
+name: build-kubekey-artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      kubernetes_version:
+        description: Kubernetes version
+        required: true
+        default: v1.30.10
+
+jobs:
+  export-artifact:
+    name: export-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    env:
+      KUBERNETES_VERSION: ${{ inputs.kubernetes_version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download KubeKey
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sfL https://get-kk.kubesphere.io | sh -
+          chmod +x kk
+
+      - name: Generate manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./kk create manifest --with-kubernetes "${KUBERNETES_VERSION}" -y
+          python3 -m pip install --disable-pip-version-check pyyaml
+          python3 scripts/prepare_kubekey_manifest.py \
+            --input manifest.yaml \
+            --output "manifest-${{ matrix.arch }}.yaml" \
+            --arch "${{ matrix.arch }}"
+
+      - name: Export artifact package
+        id: export
+        shell: bash
+        run: |
+          set -euo pipefail
+          output_file="kubekey-artifact-k8s-${KUBERNETES_VERSION}-kk-latest-linux-${{ matrix.arch }}.tar.gz"
+          ./kk artifact export -m "manifest-${{ matrix.arch }}.yaml" -o "${output_file}"
+          sha256sum "${output_file}" > "${output_file}.sha256"
+          echo "output_file=${output_file}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload artifact package
+        uses: actions/upload-artifact@v4
+        with:
+          name: kubekey-artifact-${{ matrix.arch }}
+          path: |
+            ${{ steps.export.outputs.output_file }}
+            ${{ steps.export.outputs.output_file }}.sha256
+            manifest-${{ matrix.arch }}.yaml
+          if-no-files-found: error
+          retention-days: 7
