@@ -126,6 +126,7 @@ jobs:
           echo "output_file=${output_file}" >> "${GITHUB_OUTPUT}"
 
       - name: Upload artifact package
+        id: upload_package
         uses: actions/upload-artifact@v4
         with:
           name: kubekey-artifact-${{ matrix.arch }}
@@ -133,6 +134,31 @@ jobs:
             ${{ steps.export.outputs.output_file }}
             ${{ steps.export.outputs.output_file }}.sha256
             manifest-${{ matrix.arch }}.yaml
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Record artifact download metadata
+        shell: bash
+        env:
+          ARTIFACT_URL: ${{ steps.upload_package.outputs.artifact-url }}
+        run: |
+          set -euo pipefail
+          output_file="${{ steps.export.outputs.output_file }}"
+          file_size="$(stat -c %s "${output_file}")"
+          {
+            echo "artifact_name=kubekey-artifact-${{ matrix.arch }}"
+            echo "artifact_url=${ARTIFACT_URL}"
+            echo "artifact_run_url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "package_file=${output_file}"
+            echo "package_size=${file_size}"
+            echo "retention_days=3"
+          } > "artifact-metadata-${{ matrix.arch }}.txt"
+
+      - name: Upload artifact metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: kubekey-artifact-meta-${{ matrix.arch }}
+          path: artifact-metadata-${{ matrix.arch }}.txt
           if-no-files-found: error
           retention-days: 3
 
@@ -172,15 +198,28 @@ jobs:
               continue
             fi
 
-            split -b 1900m -d -a 3 "${file}" "release-upload/${base_name}.part-"
+            metadata_file="$(grep -rl "^package_file=${base_name}$" release-assets/artifact-metadata-*.txt | head -n 1)"
+            if [[ -z "${metadata_file}" ]]; then
+              echo "Missing artifact metadata for ${base_name}"
+              exit 1
+            fi
+
+            artifact_url="$(sed -n 's/^artifact_url=//p' "${metadata_file}")"
+            run_url="$(sed -n 's/^artifact_run_url=//p' "${metadata_file}")"
+            artifact_name="$(sed -n 's/^artifact_name=//p' "${metadata_file}")"
+            retention_days="$(sed -n 's/^retention_days=//p' "${metadata_file}")"
             {
-              printf '%s\n' '#!/usr/bin/env bash'
-              printf '%s\n' 'set -euo pipefail'
-              printf '%s\n' "target=\"\${1:-${base_name}}\""
-              printf '%s\n' "cat \"${base_name}.part-\"* > \"\${target}\""
-              printf '%s\n' "sha256sum -c \"${base_name}.sha256\""
-            } > "release-upload/${base_name}.join.sh"
-            chmod +x "release-upload/${base_name}.join.sh"
+              printf '%s\n' "This package is larger than GitHub Release's 2GB single-file limit."
+              printf '%s\n' "Download it from the GitHub Actions artifact instead:"
+              printf '%s\n' "${artifact_url}"
+              printf '\n'
+              printf '%s\n' "Actions run page:"
+              printf '%s\n' "${run_url}"
+              printf '\n'
+              printf '%s\n' "Artifact name: ${artifact_name}"
+              printf '%s\n' "Package file inside the downloaded zip: ${base_name}"
+              printf '%s\n' "Artifact retention days: ${retention_days}"
+            } > "release-upload/${base_name}.actions-artifact-url.txt"
           done
 
       - name: Publish GitHub Release
