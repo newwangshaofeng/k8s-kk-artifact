@@ -7,10 +7,52 @@ on:
         description: Kubernetes version
         required: true
         default: v1.30.10
+      release_tag:
+        description: Optional GitHub Release tag
+        required: false
+        default: ""
+      release_name:
+        description: Optional GitHub Release name
+        required: false
+        default: ""
+
+permissions:
+  contents: read
 
 jobs:
+  prepare-release:
+    name: prepare-release
+    runs-on: ubuntu-24.04
+    outputs:
+      release_tag: ${{ steps.meta.outputs.release_tag }}
+      release_name: ${{ steps.meta.outputs.release_name }}
+    steps:
+      - name: Prepare release metadata
+        id: meta
+        shell: bash
+        env:
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+          INPUT_RELEASE_NAME: ${{ inputs.release_name }}
+          KUBERNETES_VERSION: ${{ inputs.kubernetes_version }}
+        run: |
+          set -euo pipefail
+          release_tag="${INPUT_RELEASE_TAG}"
+          release_name="${INPUT_RELEASE_NAME}"
+
+          if [[ -z "${release_tag}" ]]; then
+            release_tag="kubekey-artifact-${KUBERNETES_VERSION}-${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+          fi
+
+          if [[ -z "${release_name}" ]]; then
+            release_name="KubeKey artifact ${KUBERNETES_VERSION} (${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT})"
+          fi
+
+          echo "release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
+          echo "release_name=${release_name}" >> "${GITHUB_OUTPUT}"
+
   export-artifact:
     name: export-${{ matrix.arch }}
+    needs: prepare-release
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -42,7 +84,7 @@ jobs:
           set -euo pipefail
           ./kk create manifest --with-kubernetes "${KUBERNETES_VERSION}" -y
           manifest_source=""
-          for candidate in manifest.yaml sample.yaml config-sample.yaml; do
+          for candidate in manifest.yaml manifest-sample.yaml sample.yaml config-sample.yaml; do
             if [[ -f "${candidate}" ]]; then
               manifest_source="${candidate}"
               break
@@ -61,6 +103,16 @@ jobs:
             --input "${manifest_source}" \
             --output "manifest-${{ matrix.arch }}.yaml" \
             --arch "${{ matrix.arch }}"
+
+      - name: Validate manifest compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ matrix.arch }}" == "arm64" ]] && grep -q "hybridnetdev/hybridnet" "manifest-arm64.yaml"; then
+            echo "arm64 manifest still contains hybridnet image"
+            cat "manifest-arm64.yaml"
+            exit 1
+          fi
 
       - name: Export artifact package
         id: export
@@ -82,4 +134,33 @@ jobs:
             ${{ steps.export.outputs.output_file }}.sha256
             manifest-${{ matrix.arch }}.yaml
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 3
+
+  publish-release:
+    name: publish-release
+    needs:
+      - prepare-release
+      - export-artifact
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: kubekey-artifact-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare-release.outputs.release_tag }}
+          name: ${{ needs.prepare-release.outputs.release_name }}
+          generate_release_notes: true
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          files: |
+            release-assets/*.tar.gz
+            release-assets/*.sha256
+            release-assets/manifest-*.yaml

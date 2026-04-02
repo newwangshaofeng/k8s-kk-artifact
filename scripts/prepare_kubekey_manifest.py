@@ -6,6 +6,13 @@ from typing import Any
 
 import yaml
 
+EXCLUDED_IMAGES_BY_ARCH = {
+    "arm64": (
+        "docker.io/hybridnetdev/hybridnet",
+        "hybridnetdev/hybridnet",
+    ),
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -36,6 +43,21 @@ def normalize_operating_systems(items: Any, arch: str) -> Any:
     return normalized
 
 
+def normalize_images(items: Any, arch: str) -> Any:
+    if not isinstance(items, list):
+        return items
+
+    excluded_images = EXCLUDED_IMAGES_BY_ARCH.get(arch, ())
+    normalized = []
+    for item in items:
+        if isinstance(item, str) and any(excluded in item for excluded in excluded_images):
+            continue
+
+        normalized.append(item)
+
+    return normalized
+
+
 def main() -> None:
     args = parse_args()
     input_path = Path(args.input_path)
@@ -55,6 +77,9 @@ def main() -> None:
 
     if "operatingSystems" in spec:
         spec["operatingSystems"] = normalize_operating_systems(spec.get("operatingSystems"), args.arch)
+
+    if "images" in spec:
+        spec["images"] = normalize_images(spec.get("images"), args.arch)
 
     with output_path.open("w", encoding="utf-8", newline="\n") as file:
         yaml.safe_dump(manifest, file, allow_unicode=True, sort_keys=False)
