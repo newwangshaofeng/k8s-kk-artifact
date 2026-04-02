@@ -152,6 +152,37 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-upload
+          shopt -s nullglob
+
+          for file in release-assets/*.sha256 release-assets/manifest-*.yaml; do
+            cp "${file}" release-upload/
+          done
+
+          for file in release-assets/*.tar.gz; do
+            base_name="$(basename "${file}")"
+            file_size="$(stat -c %s "${file}")"
+
+            if (( file_size < 2147483648 )); then
+              cp "${file}" release-upload/
+              continue
+            fi
+
+            split -b 1900m -d -a 3 "${file}" "release-upload/${base_name}.part-"
+            {
+              printf '%s\n' '#!/usr/bin/env bash'
+              printf '%s\n' 'set -euo pipefail'
+              printf '%s\n' "target=\"\${1:-${base_name}}\""
+              printf '%s\n' "cat \"${base_name}.part-\"* > \"\${target}\""
+              printf '%s\n' "sha256sum -c \"${base_name}.sha256\""
+            } > "release-upload/${base_name}.join.sh"
+            chmod +x "release-upload/${base_name}.join.sh"
+          done
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -161,6 +192,4 @@ jobs:
           overwrite_files: true
           fail_on_unmatched_files: true
           files: |
-            release-assets/*.tar.gz
-            release-assets/*.sha256
-            release-assets/manifest-*.yaml
+            release-upload/*
