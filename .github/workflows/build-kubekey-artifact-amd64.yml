@@ -30,6 +30,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
 
       - name: Download KubeKey
         shell: bash
@@ -39,6 +42,7 @@ jobs:
           chmod +x kk
 
       - name: Generate manifest
+        id: generate_manifest
         shell: bash
         run: |
           set -euo pipefail
@@ -63,6 +67,27 @@ jobs:
             --input "${manifest_source}" \
             --output "manifest-${ARCH}.yaml" \
             --arch "${ARCH}"
+          tracked_manifest_dir="manifests/${ARCH}/${KUBERNETES_VERSION}"
+          tracked_manifest_file="${tracked_manifest_dir}/manifest-${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}.yaml"
+          mkdir -p "${tracked_manifest_dir}"
+          cp "manifest-${ARCH}.yaml" "${tracked_manifest_file}"
+          echo "tracked_manifest_file=${tracked_manifest_file}" >> "${GITHUB_OUTPUT}"
+
+      - name: Commit tracked manifest
+        shell: bash
+        env:
+          TRACKED_MANIFEST_FILE: ${{ steps.generate_manifest.outputs.tracked_manifest_file }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${TRACKED_MANIFEST_FILE}"
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "Track amd64 manifest for ${KUBERNETES_VERSION} run ${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin HEAD:"${GITHUB_REF_NAME}"
 
       - name: Export artifact package
         id: export
